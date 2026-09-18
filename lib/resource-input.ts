@@ -23,5 +23,10 @@ export function parseResourceInput(value: unknown) {
     category: String(body.category ?? "其他").trim().slice(0, 40) || "其他",
     note: String(body.note ?? "").trim().slice(0, 240),
     pinned: Boolean(body.pinned),
+    cpuUsage: Math.min(100, Math.max(0, Number(body.cpuUsage) || 0)),
+    temperature: Math.min(150, Math.max(0, Number(body.temperature) || 0)),
+    memoryUsage: Math.min(100, Math.max(0, Number(body.memoryUsage) || 0)),
+    diskUsage: Math.min(100, Math.max(0, Number(body.diskUsage) || 0)),
+    agentUrl: String(body.agentUrl ?? "").trim().replace(/\/$/, "").slice(0, 240),
   };
 }

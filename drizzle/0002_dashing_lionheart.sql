@@ -1,0 +1,2 @@
+ALTER TABLE `user_preferences` ADD `sidebar_collapsed` integer DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE `user_preferences` ADD `nav_order` text DEFAULT '["tool","site","server"]' NOT NULL;
