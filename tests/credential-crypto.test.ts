@@ -24,6 +24,13 @@ test("credential key must be exactly 32 bytes of base64 data", async () => {
   await assert.rejects(() => encryptCredential("token", "not-base64", "user", "server"), CredentialKeyError);
 });
 
+test("a different valid 32-byte key cannot decrypt an existing credential", async () => {
+  const encrypted = await encryptCredential("agent-token", secret, "user-a", "server-a");
+  const differentValidSecret = Buffer.alloc(32, 9).toString("base64");
+
+  await assert.rejects(() => decryptCredential(encrypted, differentValidSecret, "user-a", "server-a"));
+});
+
 test("resource input separates write-only credentials from browser-visible resource data", () => {
   const parsed = parseResourceInput({
     kind: "server",
