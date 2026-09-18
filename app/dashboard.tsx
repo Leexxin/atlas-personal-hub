@@ -34,6 +34,7 @@ import {
   SlidersHorizontal,
   Star,
   RefreshCw,
+  Radar,
   ShieldCheck,
   Trash2,
   Upload,
@@ -486,9 +487,10 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
     return () => lifecycle.abort();
   }, [resources]);
 
+  const monitoredServers = useMemo(() => resources.filter((item) => item.kind === "server" && item.agentUrl), [resources]);
+
   useEffect(() => {
-    const servers = resources.filter((item) => item.kind === "server" && item.agentUrl);
-    if (!servers.length) return;
+    if (!monitoredServers.length) return;
     let active = true;
     async function load(resource: Resource) {
       setServerMonitors((current) => ({ ...current, [resource.id]: { ...current[resource.id], loading: true } }));
@@ -506,11 +508,11 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
         if (active) setServerMonitors((current) => ({ ...current, [resource.id]: { ...current[resource.id], loading: false, error: error instanceof Error ? error.message : "读取指标失败" } }));
       }
     }
-    servers.forEach(load);
-    const warmup = window.setTimeout(() => servers.forEach(load), 1200);
-    const interval = window.setInterval(() => servers.forEach(load), 30_000);
+    monitoredServers.forEach(load);
+    const warmup = window.setTimeout(() => monitoredServers.forEach(load), 1200);
+    const interval = window.setInterval(() => monitoredServers.forEach(load), 30_000);
     return () => { active = false; window.clearTimeout(warmup); window.clearInterval(interval); };
-  }, [resources.map((item) => `${item.id}:${item.agentUrl}`).join("|")]);
+  }, [monitoredServers]);
 
   const initials = user.displayName.trim().slice(0, 2).toUpperCase();
   const currentLabel = filter === "all" ? preferences.pageName : kindMeta[filter].label + (filter === "tool" ? "库" : "");
@@ -549,6 +551,7 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
             {!!snapshot.errors.length && <div className="collector-errors">{snapshot.errors.map((item, index) => <span key={`${item.collector}-${index}`}>{item.collector}: {item.message ?? item.code}</span>)}</div>}
           </>}
         </HoverCardContent></HoverCard>}
+        {resource.kind === "server" && resource.agentUrl && snapshot && !monitor?.error && <a href={`/servers/${resource.id}`} className="sma-console-link"><span><Radar /><b>SMA 自动发现</b></span><ChevronRight /></a>}
         {!favorite && resource.note && <p className="resource-note">{resource.note}</p>}
         <a href={resource.url} target="_blank" rel="noreferrer" className="resource-link"><span>{hostname(resource.url)}</span><ArrowUpRight /></a>
       </article>

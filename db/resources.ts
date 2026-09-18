@@ -86,6 +86,13 @@ export async function listResources(userId: string): Promise<Resource[]> {
   return result.results.map(mapRow);
 }
 
+export async function getResource(userId: string, id: string): Promise<Resource | null> {
+  const row = await getRawDb().prepare(`SELECT id, kind, name, url, description, category, status, note, pinned,
+    cpu_usage, temperature, memory_usage, disk_usage, agent_url AS agentUrl, created_at, updated_at
+    FROM resources WHERE id = ? AND user_id = ?`).bind(id, userId).first<ResourceRow>();
+  return row ? mapRow(row) : null;
+}
+
 export async function createResource(userId: string, input: Omit<Resource, "id" | "createdAt" | "updatedAt">): Promise<Resource> {
   const db = getRawDb();
   const id = crypto.randomUUID();
