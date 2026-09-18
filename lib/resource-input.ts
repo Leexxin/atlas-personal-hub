@@ -1,6 +1,8 @@
-import type { ResourceKind, ResourceStatus } from "@/db/resources";
+import type { CredentialWrite, ResourceKind, ResourceStatus, ResourceWrite } from "@/db/resources";
 
-export function parseResourceInput(value: unknown) {
+export type ParsedResourceInput = { resource: ResourceWrite; credential: CredentialWrite };
+
+export function parseResourceInput(value: unknown): ParsedResourceInput {
   const body = value as Record<string, unknown>;
   const kind = String(body?.kind ?? "tool") as ResourceKind;
   const status = String(body?.status ?? "unknown") as ResourceStatus;
@@ -14,7 +16,20 @@ export function parseResourceInput(value: unknown) {
   } catch {
     throw new Error("INVALID_URL");
   }
-  return {
+  const agentUrl = String(body.agentUrl ?? "").trim().replace(/\/$/, "").slice(0, 240);
+  if (agentUrl) {
+    try {
+      if (!["http:", "https:"].includes(new URL(agentUrl).protocol)) throw new Error();
+    } catch {
+      throw new Error("INVALID_AGENT_URL");
+    }
+  }
+  const agentToken = typeof body.agentToken === "string" ? body.agentToken.trim() : "";
+  const clearAgentToken = body.clearAgentToken === true;
+  if (agentToken.length > 4096 || /[\r\n]/.test(agentToken) || (agentToken && clearAgentToken)) throw new Error("INVALID_CREDENTIAL");
+  if (kind !== "server" && (agentToken || clearAgentToken)) throw new Error("INVALID_CREDENTIAL");
+
+  return { resource: {
     name: name.slice(0, 80),
     url,
     kind,
@@ -27,6 +42,6 @@ export function parseResourceInput(value: unknown) {
     temperature: Math.min(150, Math.max(0, Number(body.temperature) || 0)),
     memoryUsage: Math.min(100, Math.max(0, Number(body.memoryUsage) || 0)),
     diskUsage: Math.min(100, Math.max(0, Number(body.diskUsage) || 0)),
-    agentUrl: String(body.agentUrl ?? "").trim().replace(/\/$/, "").slice(0, 240),
-  };
+    agentUrl,
+  }, credential: { token: agentToken || undefined, clear: clearAgentToken } };
 }

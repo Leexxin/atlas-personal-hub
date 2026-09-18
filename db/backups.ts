@@ -104,6 +104,7 @@ export async function restoreFullBackup(backup: AtlasBackup, mode: "merge" | "re
   const db = getRawDb();
   if (mode === "replace") {
     await db.batch([
+      db.prepare("DELETE FROM agent_credentials"),
       db.prepare("DELETE FROM resources"),
       db.prepare("DELETE FROM user_preferences"),
       db.prepare("DELETE FROM users"),

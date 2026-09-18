@@ -19,6 +19,7 @@ import {
   Globe2,
   HardDrive,
   LayoutDashboard,
+  KeyRound,
   ListRestart,
   MemoryStick,
   Moon,
@@ -36,6 +37,7 @@ import {
   RefreshCw,
   Radar,
   ShieldCheck,
+  ShieldOff,
   Trash2,
   Upload,
   Wrench,
@@ -74,7 +76,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import type { Accent, Density, Preferences, Resource, ResourceKind, ResourceStatus, Theme } from "@/db/resources";
+import type { Accent, Density, Preferences, Resource, ResourceKind, ResourceStatus, ResourceWrite, Theme } from "@/db/resources";
 
 type DashboardProps = {
   initialResources: Resource[];
@@ -92,7 +94,7 @@ type BackupPreview = {
   resources: number;
 };
 
-type ResourceDraft = Omit<Resource, "id" | "createdAt" | "updatedAt">;
+type ResourceDraft = ResourceWrite;
 
 type LiveSnapshot = {
   schemaVersion: "v1";
@@ -174,6 +176,8 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
   const [category, setCategory] = useState("all");
   const [sortingNav, setSortingNav] = useState(false);
   const [draft, setDraft] = useState<ResourceDraft>(emptyDraft);
+  const [agentToken, setAgentToken] = useState("");
+  const [clearAgentToken, setClearAgentToken] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [resourceOpen, setResourceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -230,6 +234,8 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
   function startAdd(kind: ResourceKind = "tool") {
     setEditingId(null);
     setDraft({ ...emptyDraft, kind, status: kind === "tool" ? "online" : "unknown" });
+    setAgentToken("");
+    setClearAgentToken(false);
     setResourceOpen(true);
   }
 
@@ -250,14 +256,16 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
       diskUsage: resource.diskUsage,
       agentUrl: resource.agentUrl,
     });
+    setAgentToken("");
+    setClearAgentToken(false);
     setResourceOpen(true);
   }
 
-  async function persistResource(input: ResourceDraft, id?: string) {
+  async function persistResource(input: ResourceDraft, id?: string, credential?: { agentToken?: string; clearAgentToken?: boolean }) {
     const response = await fetch(id ? `/api/resources/${id}` : "/api/resources", {
       method: id ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, ...credential }),
     });
     if (!response.ok) throw new Error(await readError(response));
     const saved = await response.json() as Resource;
@@ -268,7 +276,9 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
   async function handleSave() {
     setSaving(true);
     try {
-      await persistResource(draft, editingId ?? undefined);
+      await persistResource(draft, editingId ?? undefined, { agentToken: agentToken || undefined, clearAgentToken });
+      setAgentToken("");
+      setClearAgentToken(false);
       setResourceOpen(false);
       toast.success(editingId ? "已更新记录" : "已添加到主页");
     } catch (error) {
@@ -516,6 +526,7 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
 
   const initials = user.displayName.trim().slice(0, 2).toUpperCase();
   const currentLabel = filter === "all" ? preferences.pageName : kindMeta[filter].label + (filter === "tool" ? "库" : "");
+  const editingCredentialConfigured = Boolean(editingId && resources.find((item) => item.id === editingId)?.credentialConfigured);
 
   function renderCard(resource: Resource, favorite = false) {
     const Icon = kindMeta[resource.kind].icon;
@@ -638,7 +649,7 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
             <div className="field"><Label htmlFor="category">分类</Label><Input id="category" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} placeholder="开发 / 运维 / 设计" /></div>
             <div className="field"><Label htmlFor="description">一句说明</Label><Input id="description" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="这个入口是做什么的" /></div>
             <div className="field full"><Label htmlFor="note">备注</Label><Textarea id="note" value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} placeholder="机器配置、续费日或使用提醒…" /></div>
-            {draft.kind === "server" && <div className="server-fields full"><div className="server-fields-head"><div><strong>SMA 实时监控</strong><small>兼容 schemaVersion v1，每 30 秒自动刷新</small></div><span>/v1/snapshot</span></div><div className="field"><Label htmlFor="agent-url">Agent 地址</Label><Input id="agent-url" type="url" value={draft.agentUrl} onChange={(e) => setDraft({ ...draft, agentUrl: e.target.value })} placeholder="http://10.0.0.10:9108" /><small className="field-hint">接口未开启 CORS，数据将通过本站后端安全代理。启用 Bearer Token 时请由反向代理注入凭据。</small></div></div>}
+            {draft.kind === "server" && <div className="server-fields full"><div className="server-fields-head"><div><strong>SMA 实时监控</strong><small>兼容 schemaVersion v1，每 30 秒自动刷新</small></div><span>/v1/snapshot</span></div><div className="field"><Label htmlFor="agent-url">Agent 地址</Label><Input id="agent-url" type="url" value={draft.agentUrl} onChange={(e) => setDraft({ ...draft, agentUrl: e.target.value })} placeholder="http://10.0.0.10:9108" /></div><div className="field"><div className="credential-label"><Label htmlFor="agent-token">Bearer Token</Label><span className={(editingCredentialConfigured && !clearAgentToken) || agentToken ? "configured" : "empty"}>{clearAgentToken ? "保存后清除" : editingCredentialConfigured || agentToken ? "凭据已配置" : "未配置"}</span></div><div className="credential-input"><KeyRound /><Input id="agent-token" type="password" autoComplete="new-password" value={agentToken} disabled={clearAgentToken} onChange={(event) => { setAgentToken(event.target.value); setClearAgentToken(false); }} placeholder={editingCredentialConfigured ? "留空以保留现有 Token" : "输入该 Agent 的唯一 Token"} />{editingCredentialConfigured && <Button type="button" variant="ghost" className={clearAgentToken ? "undo-clear" : "clear-credential"} onClick={() => { setClearAgentToken((current) => !current); setAgentToken(""); }}>{clearAgentToken ? <ShieldCheck /> : <ShieldOff />}{clearAgentToken ? "撤销清除" : "清除"}</Button>}</div><small className="field-hint">Token 只写入服务端加密存储，不会回显、导出到备份或发送到浏览器。</small></div></div>}
             <button type="button" className={`pin-toggle ${draft.pinned ? "active" : ""}`} onClick={() => setDraft({ ...draft, pinned: !draft.pinned })}><Pin />{draft.pinned ? "已置顶到前排" : "置顶到前排"}{draft.pinned && <Check />}</button>
           </div>
           <DialogFooter className="dialog-actions">
@@ -660,7 +671,7 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
             <div className="field"><Label>信息密度</Label><div className="density-options">{(["comfortable", "compact"] as Density[]).map((density) => <button key={density} className={settingsDraft.density === density ? "selected" : ""} onClick={() => setSettingsDraft({ ...settingsDraft, density })}><SlidersHorizontal />{density === "comfortable" ? "舒适" : "紧凑"}</button>)}</div></div>
             {canManageBackups && <section className="backup-panel" aria-labelledby="backup-title">
               <div className="backup-panel-head"><div className="backup-icon"><DatabaseBackup /></div><div><strong id="backup-title">全站备份与还原</strong><span>用户身份、主页设置和全部导航记录</span></div><ShieldCheck /></div>
-              <p>备份不会包含密码、会话令牌或其他登录凭据。还原操作仅对管理员开放。</p>
+              <p>备份明确排除 SMA Token、密码和会话凭据。覆盖还原会清除现有 SMA 凭据，之后需逐台重新配置。</p>
               <div className="backup-actions"><Button type="button" variant="outline" onClick={handleBackupDownload} disabled={saving}><Download />{saving ? "生成中…" : "下载完整备份"}</Button><Button type="button" variant="outline" onClick={() => backupInputRef.current?.click()}><Upload />选择备份还原</Button></div>
               <input ref={backupInputRef} className="sr-only" type="file" accept="application/json,.json" onChange={(event) => handleBackupFile(event.target.files?.[0])} />
             </section>}
@@ -669,7 +680,7 @@ export default function Dashboard({ initialResources, initialPreferences, user, 
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={restoreOpen} onOpenChange={setRestoreOpen}><AlertDialogContent className="restore-dialog"><AlertDialogHeader><AlertDialogTitle>还原全站数据</AlertDialogTitle><AlertDialogDescription>请确认备份范围并选择还原方式。</AlertDialogDescription></AlertDialogHeader>{backupPreview && <div className="restore-preview"><div className="restore-file"><FileJson /><span><strong>{backupPreview.name}</strong><small>{backupPreview.exportedAt ? new Date(backupPreview.exportedAt).toLocaleString("zh-CN") : "Atlas 完整备份"}</small></span></div><div className="restore-counts"><span><b>{backupPreview.users}</b> 位用户</span><span><b>{backupPreview.preferences}</b> 份主页设置</span><span><b>{backupPreview.resources}</b> 条导航记录</span></div><p><strong>合并还原</strong>会保留当前额外数据；<strong>覆盖还原</strong>会先清空全站用户数据，再恢复此文件。</p></div>}<AlertDialogFooter><AlertDialogCancel disabled={restoring}>取消</AlertDialogCancel><Button variant="outline" disabled={restoring} onClick={() => handleRestore("merge")}>合并还原</Button><AlertDialogAction variant="destructive" disabled={restoring} onClick={() => handleRestore("replace")}>{restoring ? "还原中…" : "覆盖还原"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+      <AlertDialog open={restoreOpen} onOpenChange={setRestoreOpen}><AlertDialogContent className="restore-dialog"><AlertDialogHeader><AlertDialogTitle>还原全站数据</AlertDialogTitle><AlertDialogDescription>请确认备份范围并选择还原方式。</AlertDialogDescription></AlertDialogHeader>{backupPreview && <div className="restore-preview"><div className="restore-file"><FileJson /><span><strong>{backupPreview.name}</strong><small>{backupPreview.exportedAt ? new Date(backupPreview.exportedAt).toLocaleString("zh-CN") : "Atlas 完整备份"}</small></span></div><div className="restore-counts"><span><b>{backupPreview.users}</b> 位用户</span><span><b>{backupPreview.preferences}</b> 份主页设置</span><span><b>{backupPreview.resources}</b> 条导航记录</span></div><p><strong>合并还原</strong>会保留当前 SMA 凭据；<strong>覆盖还原</strong>会清除全部凭据，且备份文件不会恢复它们。</p></div>}<AlertDialogFooter><AlertDialogCancel disabled={restoring}>取消</AlertDialogCancel><Button variant="outline" disabled={restoring} onClick={() => handleRestore("merge")}>合并还原</Button><AlertDialogAction variant="destructive" disabled={restoring} onClick={() => handleRestore("replace")}>{restoring ? "还原中…" : "覆盖还原"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
       </div>
     </>
   );

@@ -37,6 +37,17 @@ export const resources = sqliteTable(
   ],
 );
 
+export const agentCredentials = sqliteTable("agent_credentials", {
+  resourceId: text("resource_id").primaryKey().references(() => resources.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  keyVersion: integer("key_version").notNull().default(1),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  index("idx_agent_credentials_user").on(table.userId),
+]);
+
 export const userPreferences = sqliteTable("user_preferences", {
   userId: text("user_id").primaryKey(),
   pageName: text("page_name").notNull().default("我的工具站"),

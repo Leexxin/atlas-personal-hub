@@ -108,6 +108,20 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 Replace the filename with the pending migration and `DB` with your D1 binding name if different. Use `.wrangler/state`, not `.wrangler/state/v3`; Wrangler adds the versioned directories. Do not replay migrations already applied locally. This updates only the preview database; publishing applies production migrations separately.
 
+## SMA credentials
+
+SMA Bearer Tokens are write-only. They are stored in the separate `agent_credentials` table as AES-256-GCM ciphertext and are never returned by resource APIs or included in full-site backups. Apply `drizzle/0006_misty_pete_wisdom.sql` before enabling this feature.
+
+Configure `SMA_CREDENTIAL_KEY` as a secret containing exactly 32 random bytes encoded as standard base64. Generate a value locally with a cryptographically secure tool, then configure it in the deployment environment without committing it. For local development, place it in the ignored `.dev.vars` file:
+
+```dotenv
+SMA_CREDENTIAL_KEY=<base64-encoded-32-byte-secret>
+```
+
+The same value must remain available to decrypt existing rows. Rotating it requires re-encrypting stored credentials under a new `key_version`. If the secret is absent, malformed, or cannot decrypt a stored credential, credential writes and SMA proxy requests fail with `credential_key_unavailable`; the application never falls back to plaintext.
+
+Each SMA Agent should use its own token through `--web.auth-token-file` or `SMA_AUTH_TOKEN_FILE`. The server-side snapshot and discovery proxies add `Authorization: Bearer <token>` only after verifying the signed-in ChatGPT user's ownership of the server record.
+
 ## Diagnostic Commands
 
 - `npm run install:ci`: perform the one locked dependency install

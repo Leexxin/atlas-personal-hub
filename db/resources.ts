@@ -1,5 +1,6 @@
 import { getRawDb } from "./index";
 import type { ChatGPTUser } from "@/app/chatgpt-auth";
+import { credentialMutationStatement, prepareCredentialMutation } from "./agent-credentials";
 
 export type ResourceKind = "tool" | "site" | "server";
 export type ResourceStatus = "online" | "warning" | "offline" | "unknown";
@@ -22,6 +23,7 @@ export type Resource = {
   memoryUsage: number;
   diskUsage: number;
   agentUrl: string;
+  credentialConfigured: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -36,8 +38,12 @@ export type Preferences = {
   navOrder: ResourceKind[];
 };
 
-type ResourceRow = Omit<Resource, "pinned" | "createdAt" | "updatedAt"> & {
+export type ResourceWrite = Omit<Resource, "id" | "credentialConfigured" | "createdAt" | "updatedAt">;
+export type CredentialWrite = { token?: string; clear?: boolean };
+
+type ResourceRow = Omit<Resource, "pinned" | "credentialConfigured" | "createdAt" | "updatedAt"> & {
   pinned: number;
+  credential_configured: number;
   created_at: number;
   updated_at: number;
   cpu_usage: number;
@@ -63,8 +69,8 @@ export async function recordUser(user: ChatGPTUser) {
 }
 
 function mapRow(row: ResourceRow): Resource {
-  const { created_at, updated_at, cpu_usage, memory_usage, disk_usage, ...resource } = row;
-  return { ...resource, pinned: Boolean(row.pinned), cpuUsage: cpu_usage, memoryUsage: memory_usage, diskUsage: disk_usage, createdAt: created_at, updatedAt: updated_at };
+  const { created_at, updated_at, cpu_usage, memory_usage, disk_usage, credential_configured, ...resource } = row;
+  return { ...resource, pinned: Boolean(row.pinned), credentialConfigured: Boolean(credential_configured), cpuUsage: cpu_usage, memoryUsage: memory_usage, diskUsage: disk_usage, createdAt: created_at, updatedAt: updated_at };
 }
 
 export async function listResources(userId: string): Promise<Resource[]> {
@@ -81,48 +87,59 @@ export async function listResources(userId: string): Promise<Resource[]> {
       ),
     );
   }
-  const result = await db.prepare(`SELECT id, kind, name, url, description, category, status, note, pinned, cpu_usage, temperature, memory_usage, disk_usage, agent_url AS agentUrl, created_at, updated_at
-    FROM resources WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC`).bind(userId).all<ResourceRow>();
+  const result = await db.prepare(`SELECT r.id, r.kind, r.name, r.url, r.description, r.category, r.status, r.note, r.pinned,
+    r.cpu_usage, r.temperature, r.memory_usage, r.disk_usage, r.agent_url AS agentUrl, r.created_at, r.updated_at,
+    EXISTS(SELECT 1 FROM agent_credentials c WHERE c.resource_id = r.id AND c.user_id = r.user_id) AS credential_configured
+    FROM resources r WHERE r.user_id = ? ORDER BY r.pinned DESC, r.updated_at DESC`).bind(userId).all<ResourceRow>();
   return result.results.map(mapRow);
 }
 
 export async function getResource(userId: string, id: string): Promise<Resource | null> {
-  const row = await getRawDb().prepare(`SELECT id, kind, name, url, description, category, status, note, pinned,
-    cpu_usage, temperature, memory_usage, disk_usage, agent_url AS agentUrl, created_at, updated_at
-    FROM resources WHERE id = ? AND user_id = ?`).bind(id, userId).first<ResourceRow>();
+  const row = await getRawDb().prepare(`SELECT r.id, r.kind, r.name, r.url, r.description, r.category, r.status, r.note, r.pinned,
+    r.cpu_usage, r.temperature, r.memory_usage, r.disk_usage, r.agent_url AS agentUrl, r.created_at, r.updated_at,
+    EXISTS(SELECT 1 FROM agent_credentials c WHERE c.resource_id = r.id AND c.user_id = r.user_id) AS credential_configured
+    FROM resources r WHERE r.id = ? AND r.user_id = ?`).bind(id, userId).first<ResourceRow>();
   return row ? mapRow(row) : null;
 }
 
-export async function createResource(userId: string, input: Omit<Resource, "id" | "createdAt" | "updatedAt">): Promise<Resource> {
+export async function createResource(userId: string, input: ResourceWrite, credential: CredentialWrite = {}): Promise<Resource> {
   const db = getRawDb();
   const id = crypto.randomUUID();
   const now = Date.now();
-  await db.prepare(`INSERT INTO resources
+  const mutation = await prepareCredentialMutation(userId, id, input.kind === "server" ? credential : { clear: true });
+  const insert = db.prepare(`INSERT INTO resources
     (id, user_id, kind, name, url, description, category, status, note, pinned, cpu_usage, temperature, memory_usage, disk_usage, agent_url, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(id, userId, input.kind, input.name, input.url, input.description, input.category, input.status, input.note, input.pinned ? 1 : 0, input.cpuUsage, input.temperature, input.memoryUsage, input.diskUsage, input.agentUrl, now, now).run();
-  return { id, ...input, createdAt: now, updatedAt: now };
+    .bind(id, userId, input.kind, input.name, input.url, input.description, input.category, input.status, input.note, input.pinned ? 1 : 0, input.cpuUsage, input.temperature, input.memoryUsage, input.diskUsage, input.agentUrl, now, now);
+  const credentialStatement = credentialMutationStatement(userId, id, mutation);
+  await db.batch([insert, ...(credentialStatement ? [credentialStatement] : [])]);
+  return { id, ...input, credentialConfigured: mutation.type === "set", createdAt: now, updatedAt: now };
 }
 
-export async function updateResource(userId: string, id: string, input: Omit<Resource, "id" | "createdAt" | "updatedAt">): Promise<Resource | null> {
+export async function updateResource(userId: string, id: string, input: ResourceWrite, credential: CredentialWrite = {}): Promise<Resource | null> {
   const db = getRawDb();
-  const existing = await db.prepare("SELECT created_at FROM resources WHERE id = ? AND user_id = ?").bind(id, userId).first<{ created_at: number }>();
+  const existing = await getResource(userId, id);
   if (!existing) return null;
   const now = Date.now();
-  await db.prepare(`UPDATE resources SET kind = ?, name = ?, url = ?, description = ?, category = ?,
+  const mutation = await prepareCredentialMutation(userId, id, input.kind === "server" ? credential : { clear: true });
+  const update = db.prepare(`UPDATE resources SET kind = ?, name = ?, url = ?, description = ?, category = ?,
     status = ?, note = ?, pinned = ?, cpu_usage = ?, temperature = ?, memory_usage = ?, disk_usage = ?, agent_url = ?, updated_at = ? WHERE id = ? AND user_id = ?`)
-    .bind(input.kind, input.name, input.url, input.description, input.category, input.status, input.note, input.pinned ? 1 : 0, input.cpuUsage, input.temperature, input.memoryUsage, input.diskUsage, input.agentUrl, now, id, userId).run();
-  return { id, ...input, createdAt: existing.created_at, updatedAt: now };
+    .bind(input.kind, input.name, input.url, input.description, input.category, input.status, input.note, input.pinned ? 1 : 0, input.cpuUsage, input.temperature, input.memoryUsage, input.diskUsage, input.agentUrl, now, id, userId);
+  const credentialStatement = credentialMutationStatement(userId, id, mutation);
+  await db.batch([update, ...(credentialStatement ? [credentialStatement] : [])]);
+  const credentialConfigured = mutation.type === "preserve" ? existing.credentialConfigured : mutation.type === "set";
+  return { id, ...input, credentialConfigured, createdAt: existing.createdAt, updatedAt: now };
 }
 
 export async function deleteResource(userId: string, id: string) {
-  const result = await getRawDb().prepare("DELETE FROM resources WHERE id = ? AND user_id = ?").bind(id, userId).run();
-  return result.meta.changes > 0;
-}
-
-export async function getServerAgentUrl(userId: string, id: string) {
-  return getRawDb().prepare("SELECT agent_url FROM resources WHERE id = ? AND user_id = ? AND kind = 'server'")
-    .bind(id, userId).first<{ agent_url: string }>();
+  const db = getRawDb();
+  const existing = await db.prepare("SELECT id FROM resources WHERE id = ? AND user_id = ?").bind(id, userId).first<{ id: string }>();
+  if (!existing) return false;
+  await db.batch([
+    db.prepare("DELETE FROM agent_credentials WHERE resource_id = ? AND user_id = ?").bind(id, userId),
+    db.prepare("DELETE FROM resources WHERE id = ? AND user_id = ?").bind(id, userId),
+  ]);
+  return true;
 }
 
 export async function getPreferences(userId: string): Promise<Preferences> {
@@ -133,7 +150,7 @@ export async function getPreferences(userId: string): Promise<Preferences> {
     let navOrder: ResourceKind[] = ["tool", "site", "server"];
     try {
       const parsed = JSON.parse(row.nav_order) as ResourceKind[];
-      if (parsed.length === 3 && ["tool", "site", "server"].every((kind) => parsed.includes(kind))) navOrder = parsed;
+      if (parsed.length === 3 && (["tool", "site", "server"] as ResourceKind[]).every((kind) => parsed.includes(kind))) navOrder = parsed;
     } catch { /* Preserve safe defaults for malformed legacy preferences. */ }
     return { pageName: row.page_name, greeting: row.greeting, accent: row.accent, density: row.density, theme: row.theme, sidebarCollapsed: Boolean(row.sidebar_collapsed), navOrder };
   }

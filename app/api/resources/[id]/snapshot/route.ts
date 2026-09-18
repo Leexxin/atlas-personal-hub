@@ -1,5 +1,6 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
-import { getServerAgentUrl } from "@/db/resources";
+import { getServerAgentConnection, SmaCredentialConfigurationError } from "@/db/agent-credentials";
+import { readLimitedJson, smaHeaders } from "@/lib/sma-http";
 
 export const dynamic = "force-dynamic";
 
@@ -22,13 +23,19 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const user = await getChatGPTUser();
   if (!user) return Response.json({ error: "请先登录。" }, { status: 401 });
   const { id } = await context.params;
-  const config = await getServerAgentUrl(user.userId, id);
+  let config;
+  try {
+    config = await getServerAgentConnection(user.userId, id);
+  } catch (error) {
+    if (error instanceof SmaCredentialConfigurationError) return Response.json({ error: error.message, code: error.code }, { status: 503 });
+    throw error;
+  }
   if (!config) return Response.json({ error: "服务器不存在。" }, { status: 404 });
-  if (!config.agent_url) return Response.json({ error: "尚未配置 SMA Agent 地址。", code: "not_configured" }, { status: 422 });
+  if (!config.agentUrl) return Response.json({ error: "尚未配置 SMA Agent 地址。", code: "not_configured" }, { status: 422 });
 
   let endpoint: URL;
   try {
-    endpoint = new URL(`${config.agent_url}/v1/snapshot`);
+    endpoint = new URL(`${config.agentUrl}/v1/snapshot`);
     if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error("unsupported protocol");
   } catch {
     return Response.json({ error: "SMA Agent 地址无效。", code: "invalid_url" }, { status: 400 });
@@ -37,14 +44,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(endpoint, { headers: { Accept: "application/json" }, cache: "no-store", signal: controller.signal });
+    const response = await fetch(endpoint, { headers: smaHeaders(config.token), cache: "no-store", redirect: "manual", signal: controller.signal });
     if (!response.ok) {
       const retryable = response.status === 503;
-      return Response.json({ error: response.status === 401 ? "SMA Agent 需要 Bearer Token。" : `SMA Agent 返回 ${response.status}。`, code: response.status === 401 ? "unauthorized" : "upstream_error", retryable }, { status: 502 });
+      return Response.json({ error: response.status === 401 ? "SMA Agent 凭据未配置或无效。" : `SMA Agent 返回 ${response.status}。`, code: response.status === 401 ? "unauthorized" : "upstream_error", retryable }, { status: 502 });
     }
-    const contentLength = Number(response.headers.get("content-length") ?? 0);
-    if (contentLength > 1_000_000) throw new Error("snapshot too large");
-    const snapshot = await response.json() as SmaSnapshot;
+    const snapshot = await readLimitedJson(response, 1_000_000) as SmaSnapshot;
     if (snapshot.schemaVersion !== "v1") return Response.json({ error: "暂不支持此 SMA schemaVersion。", code: "unsupported_schema" }, { status: 502 });
 
     let cpuTotalSeconds = 0;
@@ -68,7 +73,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       errors: snapshot.errors ?? [],
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    console.error("Failed to fetch SMA snapshot", error);
+    console.error("Failed to fetch SMA snapshot", error instanceof Error ? error.name : "unknown");
     return Response.json({ error: "无法连接 SMA Agent。", code: "network_error", retryable: true }, { status: 502 });
   } finally {
     clearTimeout(timeout);
